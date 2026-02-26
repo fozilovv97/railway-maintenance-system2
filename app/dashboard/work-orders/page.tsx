@@ -82,27 +82,6 @@ const catalogCategories = [...new Set(tmcCatalog.map(i => i.category))]
 /* ════════════════════════════════════════
    СПРАВОЧНИКИ ФОРМЫ
 ════════════════════════════════════════ */
-const locomotives = [
-  "ЧС7-042","ЧС7-031","ЧС8-023",
-  "ВЛ80С-1243","ВЛ80С-1201","ВЛ80Т-0987",
-  "ВЛ10-845","ВЛ85-001",
-  "ЭП1-014","ЭП1-022","ЭП20-012",
-  "2ТЭ116-1567","2ТЭ116-1590","2ТЭ25КМ-0345",
-]
-
-const wagons = [
-  "61-4440-001","61-4179-024","61-4457-007",
-  "61-4440-087","61-4179-118",
-  "11-260-4518","12-119-8821","15-150-0310",
-  "93-Н-14032","19-923-5507",
-  "18-100-3341","13-401-2290",
-]
-
-const technicians = [
-  "Иванов А.В.","Петров С.Н.","Сидоров К.П.",
-  "Козлов Д.А.","Новиков В.Р.","Морозов Е.Г.",
-  "Алексеев П.И.","Смирнов Н.Г.",
-]
 const workTypes = ["Плановое","Внеплановое","Ремонтное","Аварийное"]
 
 const repairKindsLoco = [
@@ -293,9 +272,38 @@ const tmcTemplates: Record<string, TmcTemplate[]> = {
 /* ════════════════════════════════════════
    ТИПЫ
 ════════════════════════════════════════ */
-type TmcRow    = { id:number; name:string; invNo:string; unit:string; qty:string; note:string }
+type TmcRow = { 
+  id: number
+  name: string
+  invNo: string
+  unit: string
+  qty: string
+  note: string
+  // Новые поля для валидации и расчёта стоимости
+  standardQty?: number      // Нормативное количество
+  avgPrice?: number         // Средняя цена
+  estimatedCost?: number    // Расчётная стоимость
+  warning?: string          // Предупреждение о превышении
+  nomenclatureId?: string   // ID из справочника
+}
 type RepairItem = { id:number; kind:string; rows:TmcRow[] }
-type UnitType  = "locomotive" | "wagon"
+
+// Тип для нормативов из БД
+type NomenclatureNorm = {
+  id: string
+  nomenclature_id: string
+  department_id: string
+  work_type: string
+  standard_quantity: number
+  avg_price: number
+  nomenclature?: {
+    id: string
+    name: string
+    code: string
+    unit: string
+  }
+}
+type UnitType  = "locomotive" | "wagon" | "diesel"
 type WorkOrder = {
   id:string; unitType:UnitType; unit:string; desc:string; type:string; repairKind:string
   priority:string; status:string; tech:string; created:string; closed:string
@@ -322,10 +330,11 @@ const priorityConfig: Record<string,{label:string;class:string}> = {
 /* ════════════════════════════════════════
    COMBOBOX — поиск по справочнику ТМЦ
 ════════════════════════════════════════ */
-function TmcCombobox({ value, onChange, onSelect }: {
+function TmcCombobox({ value, onChange, onSelect, filteredItems }: {
   value: string
   onChange: (v: string) => void
   onSelect: (item: CatalogItem) => void
+  filteredItems?: CatalogItem[]  // Отфильтрованные по участку позиции
 }) {
   const [open, setOpen]   = useState(false)
   const [query, setQuery] = useState(value)
@@ -343,16 +352,20 @@ function TmcCombobox({ value, onChange, onSelect }: {
     return () => document.removeEventListener("mousedown", handler)
   }, [])
 
+  // Используем отфильтрованные по участку или общий справочник
+  const baseCatalog = filteredItems && filteredItems.length > 0 ? filteredItems : tmcCatalog
+  
   const filtered = query.length === 0
-    ? tmcCatalog
-    : tmcCatalog.filter(i =>
+    ? baseCatalog
+    : baseCatalog.filter(i =>
         i.name.toLowerCase().includes(query.toLowerCase()) ||
         i.invNo.toLowerCase().includes(query.toLowerCase()) ||
         i.category.toLowerCase().includes(query.toLowerCase())
       )
 
   // Группировка по категории
-  const grouped = catalogCategories
+  const allCategories = [...new Set(baseCatalog.map(i => i.category))]
+  const grouped = allCategories
     .map(cat => ({ cat, items: filtered.filter(i => i.category === cat) }))
     .filter(g => g.items.length > 0)
 
@@ -435,15 +448,21 @@ function TmcCombobox({ value, onChange, onSelect }: {
 /* ════════════════════════════════════════
    UI HELPERS
 ════════════════════════════════════════ */
+type SelectOption = string | { value: string; label: string; id?: string }
 function FieldSelect({ value, onChange, options, placeholder }: {
-  value:string; onChange:(v:string)=>void; options:string[]; placeholder:string
+  value:string; onChange:(v:string)=>void; options:SelectOption[]; placeholder:string
 }) {
   return (
     <div className="relative">
       <select value={value} onChange={e=>onChange(e.target.value)}
         className="w-full appearance-none border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
         <option value="">{placeholder}</option>
-        {options.map(o=><option key={o} value={o}>{o}</option>)}
+        {options.map((o, idx) => {
+          const val = typeof o === "string" ? o : o.value
+          const lbl = typeof o === "string" ? o : o.label
+          const key = typeof o === "string" ? `${o}-${idx}` : (o.id || `${val}-${idx}`)
+          return <option key={key} value={val}>{lbl}</option>
+        })}
       </select>
       <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
     </div>
@@ -465,24 +484,170 @@ function FormField({ label, required, error, children }:{label:string;required?:
 /* ════════════════════════════════════════
    МОДАЛЬНОЕ ОКНО ТМЦ
 ════════════════════════════════════════ */
-function TmcModal({ repairKind, rows, onSave, onClose, zClass = "z-[60]" }: {
+function TmcModal({ repairKind, rows, onSave, onClose, zClass = "z-[60]", departmentId, workType }: {
   repairKind: string
   rows: TmcRow[]
   onSave: (rows: TmcRow[]) => void
   onClose: () => void
   zClass?: string
+  departmentId?: string    // ID участка мастера для фильтрации
+  workType?: string        // Вид работ для автозаполнения шаблона
 }) {
   const [localRows, setLocalRows] = useState<TmcRow[]>(rows)
   const [nextId, setNextId] = useState(rows.length + 1)
+  const [norms, setNorms] = useState<NomenclatureNorm[]>([])
+  const [filteredNomenclature, setFilteredNomenclature] = useState<CatalogItem[]>([])
+  const [totalEstimatedCost, setTotalEstimatedCost] = useState(0)
 
   const newId = () => { const id = nextId; setNextId(n => n + 1); return id }
 
-  const addRow = () => setLocalRows(r => [...r, { id: newId(), name: "", invNo: "", unit: "шт.", qty: "1", note: "" }])
+  // Загрузка нормативов по участку мастера
+  useEffect(() => {
+    async function loadNorms() {
+      if (!departmentId) return
+      
+      const { data } = await supabase
+        .from("nomenclature_norms")
+        .select(`
+          id, nomenclature_id, department_id, work_type, 
+          standard_quantity, avg_price,
+          nomenclature:nomenclature_id (id, name, code, unit)
+        `)
+        .eq("department_id", departmentId)
+      
+      if (data) {
+        setNorms(data as NomenclatureNorm[])
+        
+        // Фильтруем справочник ТМЦ по нормативам участка
+        const filtered = (data as NomenclatureNorm[])
+          .filter(n => n.nomenclature)
+          .map(n => ({
+            name: n.nomenclature!.name,
+            invNo: n.nomenclature!.code,
+            unit: n.nomenclature!.unit,
+            category: "Нормативы участка",
+            standardQty: n.standard_quantity,
+            avgPrice: n.avg_price,
+            nomenclatureId: n.nomenclature_id,
+          }))
+        setFilteredNomenclature(filtered as CatalogItem[])
+      }
+    }
+    loadNorms()
+  }, [departmentId])
+
+  // Автозаполнение шаблона при выборе ТО-2 или ПТОЛ ТО-2
+  useEffect(() => {
+    async function loadTemplate() {
+      if (!workType || !departmentId) return
+      
+      // Проверяем, нужно ли загружать шаблон (ТО-2, ПТОЛ ТО-2)
+      const isTO2 = workType.includes("ТО-2") || workType.includes("ПТОЛ")
+      if (!isTO2 || localRows.length > 0) return
+      
+      const { data } = await supabase
+        .from("work_type_templates")
+        .select(`
+          id, work_type, default_quantity, sort_order,
+          nomenclature:nomenclature_id (id, name, code, unit)
+        `)
+        .eq("work_type", workType)
+        .eq("department_id", departmentId)
+        .order("sort_order")
+      
+      if (data && data.length > 0) {
+        const templateRows: TmcRow[] = data
+          .filter((t: { nomenclature?: { id: string; name: string; code: string; unit: string } }) => t.nomenclature)
+          .map((t: { nomenclature?: { id: string; name: string; code: string; unit: string }; default_quantity: number }, i: number) => ({
+            id: i + 1,
+            name: t.nomenclature!.name,
+            invNo: t.nomenclature!.code,
+            unit: t.nomenclature!.unit,
+            qty: String(t.default_quantity),
+            note: "Из шаблона " + workType,
+            nomenclatureId: t.nomenclature!.id,
+          }))
+        
+        if (templateRows.length > 0) {
+          setLocalRows(templateRows)
+          setNextId(templateRows.length + 1)
+        }
+      }
+    }
+    loadTemplate()
+  }, [workType, departmentId, localRows.length])
+
+  // Валидация количества и расчёт стоимости
+  const validateAndCalculate = useCallback((row: TmcRow): TmcRow => {
+    const qty = parseFloat(row.qty) || 0
+    const norm = norms.find(n => 
+      n.nomenclature?.name === row.name || 
+      n.nomenclature?.code === row.invNo ||
+      n.nomenclature_id === row.nomenclatureId
+    )
+    
+    let warning: string | undefined
+    let estimatedCost = 0
+    let standardQty = row.standardQty
+    let avgPrice = row.avgPrice
+    
+    if (norm) {
+      standardQty = norm.standard_quantity
+      avgPrice = norm.avg_price
+      
+      // Проверка превышения норматива на 20%
+      const threshold = standardQty * 1.2
+      if (qty > threshold) {
+        const overPercent = Math.round(((qty - standardQty) / standardQty) * 100)
+        warning = `Превышение норматива на ${overPercent}% (норма: ${standardQty})`
+      }
+      
+      // Расчёт стоимости
+      estimatedCost = qty * avgPrice
+    }
+    
+    return { ...row, warning, estimatedCost, standardQty, avgPrice }
+  }, [norms])
+
+  // Пересчёт при изменении строк
+  useEffect(() => {
+    const total = localRows.reduce((sum, row) => sum + (row.estimatedCost || 0), 0)
+    setTotalEstimatedCost(total)
+  }, [localRows])
+
+  const addRow = () => setLocalRows(r => [...r, { 
+    id: newId(), name: "", invNo: "", unit: "шт.", qty: "1", note: "" 
+  }])
+  
   const removeRow = (id: number) => setLocalRows(r => r.filter(x => x.id !== id))
-  const updateRow = (id: number, field: keyof TmcRow, value: string) =>
-    setLocalRows(r => r.map(x => x.id === id ? { ...x, [field]: value } : x))
-  const selectFromCatalog = (id: number, item: TmcCatalogItem) =>
-    setLocalRows(r => r.map(x => x.id === id ? { ...x, name: item.name, invNo: item.invNo, unit: item.unit } : x))
+  
+  const updateRow = (id: number, field: keyof TmcRow, value: string) => {
+    setLocalRows(r => r.map(x => {
+      if (x.id !== id) return x
+      const updated = { ...x, [field]: value }
+      // Валидация при изменении количества
+      if (field === "qty") {
+        return validateAndCalculate(updated)
+      }
+      return updated
+    }))
+  }
+  
+  const selectFromCatalog = (id: number, item: CatalogItem) => {
+    setLocalRows(r => r.map(x => {
+      if (x.id !== id) return x
+      const updated = { 
+        ...x, 
+        name: item.name, 
+        invNo: item.invNo, 
+        unit: item.unit,
+        nomenclatureId: (item as CatalogItem & { nomenclatureId?: string }).nomenclatureId,
+        standardQty: (item as CatalogItem & { standardQty?: number }).standardQty,
+        avgPrice: (item as CatalogItem & { avgPrice?: number }).avgPrice,
+      }
+      return validateAndCalculate(updated)
+    }))
+  }
 
   return (
     <div className={`fixed inset-0 ${zClass} flex items-center justify-center`}>
@@ -528,32 +693,37 @@ function TmcModal({ repairKind, rows, onSave, onClose, zClass = "z-[60]" }: {
 
           <table className="w-full text-xs table-fixed">
             <colgroup>
-              <col style={{width:"36px"}}/>
+              <col style={{width:"32px"}}/>
               <col/>
-              <col style={{width:"130px"}}/>
-              <col style={{width:"75px"}}/>
-              <col style={{width:"70px"}}/>
-              <col style={{width:"150px"}}/>
-              <col style={{width:"36px"}}/>
+              <col style={{width:"100px"}}/>
+              <col style={{width:"60px"}}/>
+              <col style={{width:"65px"}}/>
+              <col style={{width:"90px"}}/>
+              <col style={{width:"120px"}}/>
+              <col style={{width:"32px"}}/>
             </colgroup>
             <thead className="sticky top-[44px] z-10">
               <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                <th className="px-3 py-2.5 text-center text-gray-500 font-semibold">№</th>
-                <th className="px-3 py-2.5 text-left text-gray-500 font-semibold">
+                <th className="px-2 py-2.5 text-center text-gray-500 font-semibold">№</th>
+                <th className="px-2 py-2.5 text-left text-gray-500 font-semibold">
                   Наименование ТМЦ
                   <span className="ml-1 text-[10px] font-normal text-blue-400 normal-case">(справочник)</span>
                 </th>
-                <th className="px-3 py-2.5 text-center text-gray-500 font-semibold">Инв. номер</th>
-                <th className="px-3 py-2.5 text-center text-gray-500 font-semibold">Ед. изм.</th>
-                <th className="px-3 py-2.5 text-center text-gray-500 font-semibold">Кол-во</th>
-                <th className="px-3 py-2.5 text-left text-gray-500 font-semibold">Примечание</th>
-                <th className="px-3 py-2.5"></th>
+                <th className="px-2 py-2.5 text-center text-gray-500 font-semibold">Инв. номер</th>
+                <th className="px-2 py-2.5 text-center text-gray-500 font-semibold">Ед.</th>
+                <th className="px-2 py-2.5 text-center text-gray-500 font-semibold">Кол-во</th>
+                <th className="px-2 py-2.5 text-right text-gray-500 font-semibold">
+                  Стоимость
+                  <span className="ml-1 text-[9px] font-normal text-green-500 normal-case">(сум)</span>
+                </th>
+                <th className="px-2 py-2.5 text-left text-gray-500 font-semibold">Примечание</th>
+                <th className="px-2 py-2.5"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {localRows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center">
+                  <td colSpan={8} className="px-4 py-12 text-center">
                     <div className="flex flex-col items-center gap-3 text-gray-400">
                       <Package className="w-10 h-10 opacity-30"/>
                       <p className="text-sm font-medium">Нет позиций</p>
@@ -563,35 +733,72 @@ function TmcModal({ repairKind, rows, onSave, onClose, zClass = "z-[60]" }: {
                 </tr>
               )}
               {localRows.map((row, idx) => (
-                <tr key={row.id} className="bg-white dark:bg-gray-900 hover:bg-gray-50/50 dark:hover:bg-gray-800/30">
-                  <td className="px-3 py-2.5 text-center text-gray-400 font-mono text-[11px]">{idx + 1}</td>
+                <tr key={row.id} className={`bg-white dark:bg-gray-900 hover:bg-gray-50/50 dark:hover:bg-gray-800/30 ${
+                  row.warning ? "bg-amber-50/50 dark:bg-amber-950/20" : ""
+                }`}>
+                  <td className="px-2 py-2 text-center text-gray-400 font-mono text-[11px]">{idx + 1}</td>
                   <td className="px-2 py-2">
                     <TmcCombobox
                       value={row.name}
                       onChange={v => updateRow(row.id, "name", v)}
                       onSelect={item => selectFromCatalog(row.id, item)}
+                      filteredItems={filteredNomenclature}
                     />
+                    {/* Предупреждение о превышении норматива */}
+                    {row.warning && (
+                      <div className="flex items-center gap-1 mt-1 text-[10px] text-amber-600 dark:text-amber-400">
+                        <AlertTriangle className="w-3 h-3 flex-shrink-0"/>
+                        <span>{row.warning}</span>
+                      </div>
+                    )}
                   </td>
                   <td className="px-2 py-2">
                     <input value={row.invNo} onChange={e => updateRow(row.id, "invNo", e.target.value)}
                       placeholder="МТР-00000"
-                      className="w-full border border-gray-200 dark:border-gray-700 rounded px-2 py-1.5 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"/>
+                      className="w-full border border-gray-200 dark:border-gray-700 rounded px-1.5 py-1 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"/>
                   </td>
                   <td className="px-2 py-2">
                     <select value={row.unit} onChange={e => updateRow(row.id, "unit", e.target.value)}
-                      className="w-full border border-gray-200 dark:border-gray-700 rounded px-1 py-1.5 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-400">
+                      className="w-full border border-gray-200 dark:border-gray-700 rounded px-1 py-1 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-400">
                       {["шт.","кг.","м.","л.","уп.","рул.","кан.","к-т"].map(u => <option key={u}>{u}</option>)}
                     </select>
                   </td>
                   <td className="px-2 py-2">
                     <input type="number" min="0" value={row.qty} onChange={e => updateRow(row.id, "qty", e.target.value)}
                       placeholder="0"
-                      className="w-full border border-gray-200 dark:border-gray-700 rounded px-2 py-1.5 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-400"/>
+                      className={`w-full border rounded px-1.5 py-1 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 ${
+                        row.warning 
+                          ? "border-amber-400 dark:border-amber-600 focus:ring-amber-400" 
+                          : "border-gray-200 dark:border-gray-700 focus:ring-blue-400"
+                      }`}/>
+                    {/* Норматив под полем */}
+                    {row.standardQty && (
+                      <p className="text-[9px] text-gray-400 mt-0.5 text-center">
+                        норма: {row.standardQty}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-2 py-2 text-right">
+                    {/* Расчётная стоимость (estimated_cost) */}
+                    {row.estimatedCost ? (
+                      <div>
+                        <span className="font-semibold text-green-600 dark:text-green-400">
+                          {row.estimatedCost.toLocaleString("ru-RU")}
+                        </span>
+                        {row.avgPrice && (
+                          <p className="text-[9px] text-gray-400 mt-0.5">
+                            {row.avgPrice.toLocaleString("ru-RU")}/ед.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-gray-300">—</span>
+                    )}
                   </td>
                   <td className="px-2 py-2">
                     <input value={row.note} onChange={e => updateRow(row.id, "note", e.target.value)}
                       placeholder="—"
-                      className="w-full border border-gray-200 dark:border-gray-700 rounded px-2 py-1.5 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-400"/>
+                      className="w-full border border-gray-200 dark:border-gray-700 rounded px-1.5 py-1 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-400"/>
                   </td>
                   <td className="px-2 py-2 text-center">
                     <button onClick={() => removeRow(row.id)}
@@ -607,9 +814,25 @@ function TmcModal({ repairKind, rows, onSave, onClose, zClass = "z-[60]" }: {
 
         {/* Подвал */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 flex-shrink-0">
-          <p className="text-xs text-gray-500">
-            Итого позиций: <span className="font-semibold text-gray-900 dark:text-white">{localRows.length}</span>
-          </p>
+          <div className="flex items-center gap-6">
+            <p className="text-xs text-gray-500">
+              Позиций: <span className="font-semibold text-gray-900 dark:text-white">{localRows.length}</span>
+            </p>
+            {totalEstimatedCost > 0 && (
+              <p className="text-xs text-gray-500">
+                Расчётная стоимость: 
+                <span className="ml-1 font-bold text-green-600 dark:text-green-400">
+                  {totalEstimatedCost.toLocaleString("ru-RU")} сум
+                </span>
+              </p>
+            )}
+            {localRows.some(r => r.warning) && (
+              <p className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="w-3 h-3"/>
+                Есть превышения норматива
+              </p>
+            )}
+          </div>
           <div className="flex gap-3">
             <Button variant="outline" onClick={onClose}>Отмена</Button>
             <Button className="gap-2 bg-blue-600 hover:bg-blue-700" onClick={() => onSave(localRows)}>
@@ -625,23 +848,30 @@ function TmcModal({ repairKind, rows, onSave, onClose, zClass = "z-[60]" }: {
 /* ════════════════════════════════════════
    МОДАЛ УПРАВЛЕНИЯ ВИДАМИ РАБОТ И ТМЦ
 ════════════════════════════════════════ */
-function RepairItemsModal({ repairItems, repairKinds, onSave, onClose }: {
+function RepairItemsModal({ repairItems, repairKinds, onSave, onClose, tmcTemplatesData, departmentId }: {
   repairItems: RepairItem[]
   repairKinds: { value: string; label: string }[]
   onSave: (items: RepairItem[]) => void
   onClose: () => void
+  tmcTemplatesData?: Record<string, TmcTemplate[]>
+  departmentId?: string  // ID участка мастера для фильтрации ТМЦ
 }) {
   const [localItems, setLocalItems] = useState<RepairItem[]>(repairItems)
   const [idCnt,      setIdCnt]      = useState(repairItems.length + 1)
   const [addingKind, setAddingKind] = useState("")
   const [tmcEditId,  setTmcEditId]  = useState<number|null>(null)
 
+  // Используем шаблоны из БД или захардкоженные (fallback)
+  const templates = tmcTemplatesData && Object.keys(tmcTemplatesData).length > 0
+    ? tmcTemplatesData
+    : tmcTemplates
+
   const addItem = () => {
     if (!addingKind) return
     if (localItems.some(r => r.kind === addingKind)) { setAddingKind(""); return }
     const id = idCnt
     setIdCnt(n => n + 1)
-    const rows = (tmcTemplates[addingKind] || []).map((t, i) => ({ id: i + 1, ...t }))
+    const rows = (templates[addingKind] || []).map((t, i) => ({ id: i + 1, ...t }))
     setLocalItems(r => [...r, { id, kind: addingKind, rows }])
     setAddingKind("")
   }
@@ -751,10 +981,10 @@ function RepairItemsModal({ repairItems, repairKinds, onSave, onClose }: {
             </Button>
           </div>
 
-          {addingKind && tmcTemplates[addingKind] && (
+          {addingKind && templates[addingKind] && (
             <p className="text-xs text-blue-600 dark:text-blue-400 flex items-center gap-1">
               <Info className="w-3 h-3 flex-shrink-0"/>
-              Шаблон ТМЦ для <b>{addingKind}</b> будет подгружен автоматически ({tmcTemplates[addingKind].length} позиций)
+              Шаблон ТМЦ для <b>{addingKind}</b> будет подгружен автоматически ({templates[addingKind].length} позиций)
             </p>
           )}
         </div>
@@ -780,6 +1010,8 @@ function RepairItemsModal({ repairItems, repairKinds, onSave, onClose }: {
           repairKind={tmcItem.kind}
           rows={tmcItem.rows}
           zClass="z-[70]"
+          departmentId={departmentId}
+          workType={tmcItem.kind}
           onSave={(rows) => { setItemRows(tmcItem.id, rows); setTmcEditId(null) }}
           onClose={() => setTmcEditId(null)}
         />
@@ -791,16 +1023,35 @@ function RepairItemsModal({ repairItems, repairKinds, onSave, onClose }: {
 /* ════════════════════════════════════════
    ФОРМА СОЗДАНИЯ НАРЯДА
 ════════════════════════════════════════ */
-function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection="", sections }:{
+type EmployeeOption = { id: string; tab_number: string; full_name: string; section_id: string | null }
+type WorkTypeFromDb = { id: string; code: string; name: string; unit_type: "locomotive" | "wagon" | "diesel" }
+type FixedAsset = { id: string; name: string; series: string; inv_number: string; asset_type: "locomotive" | "wagon" | "diesel" | string; initial_cost: string | null }
+
+function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection="", sections, employees, onRefreshData, workTypesDb, tmcTemplatesDb, fixedAssets, getSectionId }:{
   onClose:()=>void
   onSave:(wo:WorkOrder)=>void
   defaultUnit?: string
   defaultSection?: string
   sections: string[]
+  employees: EmployeeOption[]
+  onRefreshData?: () => void
+  workTypesDb?: WorkTypeFromDb[]
+  tmcTemplatesDb?: Record<string, TmcTemplate[]>
+  fixedAssets?: FixedAsset[]
+  getSectionId?: (name: string) => string | undefined
 }) {
-  const today = new Date().toLocaleDateString("ru-RU")
+  // Фактическая дата и время создания
+  const now = new Date()
+  const createdDate = now.toLocaleDateString("ru-RU")
+  const createdTime = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+  const createdDateTime = `${createdDate} ${createdTime}`
+
+  // Значения по умолчанию для плановых дат
+  const defaultStartDate = now.toISOString().slice(0, 10)
+  const defaultStartTime = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
 
   const [unitType,      setUnitType]      = useState<UnitType>("locomotive")
+  const [selectedSeries, setSelectedSeries] = useState("")
   const [unit,          setUnit]          = useState(defaultUnit)
   const [depot,         setDepot]         = useState(defaultSection)
   const [workType,      setWorkType]      = useState("")
@@ -808,8 +1059,10 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
   const [priority,      setPriority]      = useState("normal")
   const [tech,          setTech]          = useState("")
   const [chief,         setChief]         = useState("")
-  const [dateStart,     setDateStart]     = useState("")
+  const [dateStart,     setDateStart]     = useState(defaultStartDate)
+  const [timeStart,     setTimeStart]     = useState(defaultStartTime)
   const [dateEnd,       setDateEnd]       = useState("")
+  const [timeEnd,       setTimeEnd]       = useState("")
   const [desc,          setDesc]          = useState("")
   const [note,          setNote]          = useState("")
   const [errors,        setErrors]        = useState<Record<string,string>>({})
@@ -819,15 +1072,67 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
 
   const handleUnitTypeChange = (t: UnitType) => {
     setUnitType(t)
+    setSelectedSeries("")
     setUnit("")
     setRepairItems([])
   }
 
-  const currentRepairKinds = unitType === "wagon" ? repairKindsWagon : repairKindsLoco
-  const currentUnits       = unitType === "wagon" ? wagons : locomotives
-  const unitLabel          = unitType === "wagon" ? "Вагон" : "Локомотив"
+  const handleSeriesChange = (s: string) => {
+    setSelectedSeries(s)
+    setUnit("")
+  }
+
+  // Виды работ из БД или захардкоженные (fallback)
+  // Тепловозы используют виды работ локомотивов (unit_type = "locomotive" или "diesel")
+  const workTypeFilter = unitType === "diesel" ? ["diesel", "locomotive"] : [unitType]
+  const currentRepairKinds = workTypesDb && workTypesDb.length > 0
+    ? [
+        { value: "", label: "— Не выбрано —" },
+        ...workTypesDb
+          .filter(wt => workTypeFilter.includes(wt.unit_type))
+          .map(wt => ({ value: wt.code, label: `${wt.code} — ${wt.name}` }))
+      ]
+    : (unitType === "wagon" ? repairKindsWagon : repairKindsLoco)
+  
+  // Шаблоны ТМЦ из БД или захардкоженные (fallback)
+  const currentTmcTemplates = tmcTemplatesDb && Object.keys(tmcTemplatesDb).length > 0
+    ? tmcTemplatesDb
+    : tmcTemplates
+
+  // Основные средства из БД (без fallback - только реальные данные из справочника ОС)
+  const assetsFromDb = fixedAssets ?? []
+  
+  // Фильтрация по типу оборудования
+  const getAssetsByType = (type: UnitType) => {
+    if (type === "wagon") {
+      return assetsFromDb.filter(a => a.asset_type === "wagon")
+    } else if (type === "diesel") {
+      return assetsFromDb.filter(a => a.asset_type === "diesel")
+    } else {
+      // Локомотивы: asset_type === "locomotive" ИЛИ не указан тип
+      return assetsFromDb.filter(a => a.asset_type === "locomotive" || !a.asset_type || a.asset_type === "")
+    }
+  }
+  
+  const filteredAssets = getAssetsByType(unitType)
+  
+  // Уникальные серии для выбранного типа оборудования
+  const availableSeries = [...new Set(filteredAssets.map(a => a.series).filter(Boolean))].sort()
+  
+  // Оборудование отфильтрованное по серии (если выбрана)
+  const currentUnits = filteredAssets
+    .filter(a => !selectedSeries || a.series === selectedSeries)
+    .map(a => {
+      const extra = a.initial_cost ? ` (${a.initial_cost})` : ""
+      const displayName = `${a.name}${extra}`
+      return { value: a.name, label: displayName, id: a.id, series: a.series }
+    })
+    .filter(a => a.value)
+  const unitLabel = unitType === "wagon" ? "Вагон" : unitType === "diesel" ? "Тепловоз" : "Локомотив"
 
   const totalTmcCount = repairItems.reduce((acc, r) => acc + r.rows.length, 0)
+  
+  const technicians = employees.map(e => e.full_name)
 
   const validate = () => {
     const e:Record<string,string>={}
@@ -846,8 +1151,11 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
     const repairKind = repairItems.map(r => r.kind).join(", ")
     // equipment — серия из номера единицы (часть до первого дефиса-цифры или первые символы)
     const equipmentVal = unit.replace(/-\d+$/, "").replace(/-\d+-.*/, "")
-    const closed = status === "completed" ? today : "—"
-    onSave({id,unitType,unit,section:depot||"—",equipment:equipmentVal||unit,desc:desc.trim(),type:workType,repairKind,priority,status,tech,created:today,closed})
+    const closed = status === "completed" ? createdDateTime : "—"
+    // Формируем даты с временем
+    const dateStartFull = dateStart && timeStart ? `${dateStart} ${timeStart}` : dateStart
+    const dateEndFull = dateEnd && timeEnd ? `${dateEnd} ${timeEnd}` : dateEnd
+    onSave({id,unitType,unit,section:depot||"—",equipment:equipmentVal||unit,desc:desc.trim(),type:workType,repairKind,priority,status,tech,created:createdDateTime,closed,dateStart:dateStartFull,dateEnd:dateEndFull,note,chief,depot})
     onClose()
   }
 
@@ -864,7 +1172,7 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
             </div>
             <div>
               <h2 className="text-base font-bold text-gray-900 dark:text-white">Новый наряд-задание</h2>
-              <p className="text-xs text-gray-500">Дата создания: {today}</p>
+              <p className="text-xs text-gray-500">Создан: {createdDateTime}</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
@@ -881,10 +1189,11 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
               1. Основные сведения
             </h3>
 
-            {/* Переключатель Локомотив / Вагон */}
+            {/* Переключатель Локомотив / Тепловоз / Вагон */}
             <div className="flex gap-2 mb-4 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl">
               {([
                 { value: "locomotive", label: "Локомотив" },
+                { value: "diesel",     label: "Тепловоз" },
                 { value: "wagon",      label: "Вагон" },
               ] as {value:UnitType;label:string}[]).map(opt => (
                 <button key={opt.value} type="button"
@@ -898,6 +1207,23 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
                 </button>
               ))}
             </div>
+
+            {/* Выбор серии (если есть серии для данного типа) */}
+            {availableSeries.length > 0 && (
+              <div className="mb-4">
+                <FormField label="Серия оборудования">
+                  <FieldSelect 
+                    placeholder="Все серии" 
+                    value={selectedSeries} 
+                    onChange={handleSeriesChange} 
+                    options={[
+                      { value: "", label: "— Все серии —", id: "all" },
+                      ...availableSeries.map(s => ({ value: s, label: s, id: s }))
+                    ]}
+                  />
+                </FormField>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               <FormField label={unitLabel} required error={errors.unit}>
@@ -999,9 +1325,23 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
 
           {/* 3. Исполнение */}
           <section>
-            <h3 className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest mb-3 pb-1 border-b border-blue-100 dark:border-blue-900">
-              3. Исполнение
-            </h3>
+            <div className="flex items-center justify-between mb-3 pb-1 border-b border-blue-100 dark:border-blue-900">
+              <h3 className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest">
+                3. Исполнение
+              </h3>
+              {onRefreshData && (
+                <button
+                  type="button"
+                  onClick={onRefreshData}
+                  className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Обновить справочники
+                </button>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <FormField label="Исполнитель" required error={errors.tech}>
                 <FieldSelect placeholder="Выберите исполнителя" value={tech} onChange={setTech} options={technicians}/>
@@ -1010,12 +1350,28 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
                 <FieldSelect placeholder="Выберите руководителя" value={chief} onChange={setChief} options={technicians}/>
               </FormField>
               <FormField label="Плановая дата начала">
-                <Input type="date" value={dateStart} onChange={e=>setDateStart(e.target.value)} className="text-sm"/>
+                <div className="flex gap-2">
+                  <Input type="date" value={dateStart} onChange={e=>setDateStart(e.target.value)} className="text-sm flex-1"/>
+                  <Input type="time" value={timeStart} onChange={e=>setTimeStart(e.target.value)} className="text-sm w-24"/>
+                </div>
               </FormField>
               <FormField label="Плановая дата окончания">
-                <Input type="date" value={dateEnd} onChange={e=>setDateEnd(e.target.value)} className="text-sm"/>
+                <div className="flex gap-2">
+                  <Input type="date" value={dateEnd} onChange={e=>setDateEnd(e.target.value)} className="text-sm flex-1"/>
+                  <Input type="time" value={timeEnd} onChange={e=>setTimeEnd(e.target.value)} className="text-sm w-24"/>
+                </div>
               </FormField>
             </div>
+
+            {/* Фактическая дата и время создания */}
+            <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-950/30 rounded-lg border border-blue-200 dark:border-blue-800">
+              <div className="flex items-center gap-2 text-sm">
+                <Clock className="w-4 h-4 text-blue-600 dark:text-blue-400"/>
+                <span className="text-gray-600 dark:text-gray-400">Фактическая дата создания:</span>
+                <span className="font-semibold text-blue-700 dark:text-blue-300">{createdDateTime}</span>
+              </div>
+            </div>
+
             <div className="mt-4">
               <FormField label="Примечание">
                 <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2}
@@ -1044,6 +1400,8 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
         <RepairItemsModal
           repairItems={repairItems}
           repairKinds={currentRepairKinds}
+          tmcTemplatesData={currentTmcTemplates}
+          departmentId={getSectionId?.(depot)}
           onSave={(items) => { setRepairItems(items); setRepairModalOpen(false) }}
           onClose={() => setRepairModalOpen(false)}
         />
@@ -1055,12 +1413,14 @@ function CreateWorkOrderModal({ onClose, onSave, defaultUnit="", defaultSection=
 /* ════════════════════════════════════════
    МОДАЛ ПРОСМОТРА / РЕДАКТИРОВАНИЯ НАРЯДА
 ════════════════════════════════════════ */
-function ViewEditOrderModal({ order, onClose, onSave, isMasterView = false }: {
+function ViewEditOrderModal({ order, onClose, onSave, isMasterView = false, employees = [] }: {
   order: WorkOrder
   onClose: () => void
   onSave: (updated: WorkOrder) => void
   isMasterView?: boolean
+  employees?: EmployeeOption[]
 }) {
+  const technicians = employees.map(e => e.full_name)
   const isReadOnly = order.status === "completed"
 
   const [desc,     setDesc]     = useState(order.desc)
@@ -1091,8 +1451,8 @@ function ViewEditOrderModal({ order, onClose, onSave, isMasterView = false }: {
     if (!editing) setEditing(true)
   }
 
-  const st = statusConfig[status]
-  const pr = priorityConfig[priority]
+  const st = statusConfig[status] ?? statusConfig.pending
+  const pr = priorityConfig[priority] ?? priorityConfig.normal
 
   const fieldCls = (editable: boolean) =>
     editable
@@ -1364,6 +1724,10 @@ function WorkOrdersPage() {
   const isMaster   = profile?.role === "master"
 
   const [orders,         setOrders]         = useState<WorkOrder[]>([])
+  const [employees,      setEmployees]      = useState<EmployeeOption[]>([])
+  const [workTypesDb,    setWorkTypesDb]    = useState<WorkTypeFromDb[]>([])
+  const [tmcTemplatesDb, setTmcTemplatesDb] = useState<Record<string, TmcTemplate[]>>({})
+  const [fixedAssets,    setFixedAssets]    = useState<FixedAsset[]>([])
   const [loading,        setLoading]        = useState(true)
   const [showForm,       setShowForm]        = useState(false)
   const [formDefUnit,    setFormDefUnit]     = useState("")
@@ -1374,6 +1738,66 @@ function WorkOrdersPage() {
   const [fSection,       setFSection]        = useState("")
   const [fEquip,         setFEquip]          = useState("")
   const [fUnitType,      setFUnitType]       = useState("")
+
+  // Справочник участков (перемещён выше для использования в realtime подписке)
+  const { sections: sectionsFromDb, refresh: refreshSections, getSectionId } = useSections()
+
+  // Загрузка работников из справочника
+  const fetchEmployees = useCallback(async () => {
+    const { data } = await supabase
+      .from("employees")
+      .select("id, tab_number, full_name, section_id")
+      .order("full_name")
+    setEmployees((data as EmployeeOption[]) ?? [])
+  }, [])
+
+  // Загрузка основных средств (все записи из справочника ОС)
+  const fetchFixedAssets = useCallback(async () => {
+    const { data } = await supabase
+      .from("fixed_assets")
+      .select("id, name, series, inv_number, asset_type, initial_cost")
+      .order("name")
+      .limit(1000)
+    setFixedAssets((data as FixedAsset[]) ?? [])
+  }, [])
+
+  // Загрузка видов работ из справочника
+  const fetchWorkTypes = useCallback(async () => {
+    const { data: wtData } = await supabase
+      .from("work_types")
+      .select("id, code, name, unit_type")
+      .order("sort_order")
+      .order("code")
+    
+    const types = (wtData as WorkTypeFromDb[]) ?? []
+    setWorkTypesDb(types)
+
+    // Загрузка шаблонов ТМЦ для каждого вида работ
+    if (types.length > 0) {
+      const ids = types.map(t => t.id)
+      const { data: tmcData } = await supabase
+        .from("work_type_tmc")
+        .select("work_type_id, name, inv_no, unit, qty, note")
+        .in("work_type_id", ids)
+        .order("sort_order")
+
+      const templates: Record<string, TmcTemplate[]> = {}
+      for (const t of tmcData ?? []) {
+        const wt = types.find(w => w.id === t.work_type_id)
+        if (wt) {
+          if (!templates[wt.code]) templates[wt.code] = []
+          templates[wt.code].push({
+            name: t.name,
+            invNo: t.inv_no,
+            unit: t.unit,
+            qty: String(t.qty),
+            note: t.note,
+          })
+        }
+      }
+      setTmcTemplatesDb(templates)
+    }
+  }, [])
 
   // Загрузка нарядов из Supabase (лимит 500 — для списка и фильтров)
   const fetchOrders = useCallback(async () => {
@@ -1391,7 +1815,35 @@ function WorkOrdersPage() {
     setLoading(false)
   }, [])
 
-  useEffect(() => { fetchOrders() }, [fetchOrders])
+  useEffect(() => { 
+    fetchOrders()
+    fetchEmployees()
+    fetchWorkTypes()
+    fetchFixedAssets()
+  }, [fetchOrders, fetchEmployees, fetchWorkTypes, fetchFixedAssets])
+
+  // Real-time подписки для синхронизации всех справочников
+  useEffect(() => {
+    const channel = supabase
+      .channel("work_orders_sync")
+      .on("postgres_changes", { event: "*", schema: "public", table: "fixed_assets" }, () => {
+        fetchFixedAssets()
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "employees" }, () => {
+        fetchEmployees()
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "work_types" }, () => {
+        fetchWorkTypes()
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "sections" }, () => {
+        refreshSections()
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "work_orders" }, () => {
+        fetchOrders()
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [fetchFixedAssets, fetchEmployees, fetchWorkTypes, refreshSections, fetchOrders])
 
   // Обработка URL-параметров из Ганта (create=1&unit=X&section=Y)
   useEffect(() => {
@@ -1403,7 +1855,6 @@ function WorkOrdersPage() {
     }
   }, [searchParams, router])
 
-  const { sections: sectionsFromDb } = useSections()
   const sections  = [...new Set([...sectionsFromDb, ...orders.map(o => o.section)])].filter(Boolean).sort()
   const equipment = [...new Set(orders.map(o => o.equipment))].filter(Boolean).sort()
 
@@ -1486,6 +1937,12 @@ function WorkOrdersPage() {
             defaultUnit={formDefUnit}
             defaultSection={formDefSection}
             sections={sectionsFromDb}
+            employees={employees}
+            onRefreshData={() => { fetchEmployees(); refreshSections(); fetchWorkTypes(); fetchFixedAssets(); }}
+            workTypesDb={workTypesDb}
+            tmcTemplatesDb={tmcTemplatesDb}
+            fixedAssets={fixedAssets}
+            getSectionId={getSectionId}
           />
         )}
         {selectedOrder && (
@@ -1494,6 +1951,7 @@ function WorkOrdersPage() {
             onClose={()=>setSelectedOrder(null)}
             onSave={(updated)=>{ handleUpdateOrder(updated); setSelectedOrder(null) }}
             isMasterView={isMaster}
+            employees={employees}
           />
         )}
 
@@ -1614,8 +2072,8 @@ function WorkOrdersPage() {
                 </td></tr>
               )}
               {filtered.map(wo => {
-                const st = statusConfig[wo.status]
-                const pr = priorityConfig[wo.priority]
+                const st = statusConfig[wo.status] ?? statusConfig.pending
+                const pr = priorityConfig[wo.priority] ?? priorityConfig.normal
                 const isLocked = wo.status === "completed"
                 return (
                   <tr key={wo.id}

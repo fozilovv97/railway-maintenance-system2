@@ -205,6 +205,17 @@ export default function AdminUsersPage() {
 
   useEffect(() => { fetchUsers() }, [fetchUsers])
 
+  // Real-time подписка на изменения в profiles
+  useEffect(() => {
+    const channel = supabase
+      .channel("admin_users_sync")
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => {
+        fetchUsers()
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [fetchUsers])
+
   if (myProfile?.role !== "admin") {
     return (
       <div className="flex items-center justify-center h-96 text-gray-400 text-sm">

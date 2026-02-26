@@ -1,7 +1,8 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { supabase } from "@/lib/supabase"
+import { useSectionView } from "@/lib/section-view-context"
 import {
   FileText, ClipboardList, Landmark, Package,
   Calendar, Download, BarChart3, PieChart,
@@ -49,6 +50,7 @@ function formatDate(d: Date) {
 }
 
 export default function ReportsPage() {
+  const { effectiveSection } = useSectionView()
   const [reportType, setReportType] = useState<ReportId>("work_orders")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
@@ -57,34 +59,61 @@ export default function ReportsPage() {
   const [assetsData, setAssetsData] = useState<Record<string, unknown>[]>([])
   const [tmcData, setTmcData] = useState<Record<string, unknown>[]>([])
 
+  const filteredWoData = useMemo(() => {
+    if (!effectiveSection) return woData
+    return woData.filter((r: Record<string, unknown>) => (r.section as string) === effectiveSection)
+  }, [woData, effectiveSection])
+  const filteredAssetsData = useMemo(() => {
+    if (!effectiveSection) return assetsData
+    return assetsData.filter((r: Record<string, unknown>) => (r.depot as string) === effectiveSection)
+  }, [assetsData, effectiveSection])
+
   const loadWorkOrders = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from("work_orders")
-      .select("id,unit,section,work_type,repair_kind,status,created,created_at,priority,tech")
-      .order("created_at", { ascending: false })
-    setWoData((data ?? []) as Record<string, unknown>[])
-    setLoading(false)
+    try {
+      const { data } = await supabase
+        .from("work_orders")
+        .select("id,unit,section,work_type,repair_kind,status,created,created_at,priority,tech")
+        .order("created_at", { ascending: false })
+        .limit(1000)
+      setWoData((data ?? []) as Record<string, unknown>[])
+    } catch (e) {
+      console.error("Ошибка загрузки нарядов:", e)
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from("fixed_assets")
-      .select("id,name,asset_type,series,depot,status,comm_date,inv_number")
-      .order("name", { ascending: true })
-    setAssetsData((data ?? []) as Record<string, unknown>[])
-    setLoading(false)
+    try {
+      const { data } = await supabase
+        .from("fixed_assets")
+        .select("id,name,asset_type,series,depot,status,comm_date,inv_number")
+        .order("name", { ascending: true })
+        .limit(2000)
+      setAssetsData((data ?? []) as Record<string, unknown>[])
+    } catch (e) {
+      console.error("Ошибка загрузки ОС:", e)
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   const loadTmc = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from("tmc_documents")
-      .select("id,doc_no,date,work_order_id,depot,status")
-      .order("created_at", { ascending: false })
-    setTmcData((data ?? []) as Record<string, unknown>[])
-    setLoading(false)
+    try {
+      const { data } = await supabase
+        .from("tmc_documents")
+        .select("id,doc_no,date,work_order_id,depot,status")
+        .order("created_at", { ascending: false })
+        .limit(500)
+      setTmcData((data ?? []) as Record<string, unknown>[])
+    } catch (e) {
+      console.error("Ошибка загрузки ТМЦ:", e)
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => {
@@ -100,9 +129,9 @@ export default function ReportsPage() {
     setDateTo(formatDate(now))
   }
 
-  let filteredWo = woData
+  let filteredWo = filteredWoData
   if (dateFrom || dateTo) {
-    filteredWo = woData.filter(row => {
+    filteredWo = filteredWoData.filter(row => {
       const created = (row.created as string) || (row.created_at as string) || ""
       const d = parseDateStr(created.slice(0, 10)) ?? parseDateStr(created)
       if (!d) return true
@@ -135,13 +164,13 @@ export default function ReportsPage() {
     .slice(0, 10)
     .map(([name, count]) => ({ name, count }))
 
-  const assetsByStatus = assetsData.reduce((acc, row) => {
+  const assetsByStatus = filteredAssetsData.reduce((acc, row) => {
     const s = (row.status as string) || "operational"
     acc[s] = (acc[s] || 0) + 1
     return acc
   }, {} as Record<string, number>)
 
-  const assetsByType = assetsData.reduce((acc, row) => {
+  const assetsByType = filteredAssetsData.reduce((acc, row) => {
     const t = (row.asset_type as string) || "locomotive"
     acc[t] = (acc[t] || 0) + 1
     return acc
@@ -338,7 +367,7 @@ export default function ReportsPage() {
               <div className="flex justify-end">
                 <button
                   type="button"
-                  onClick={() => exportCsv(assetsData, `os_${new Date().toISOString().slice(0,10)}.csv`)}
+                  onClick={() => exportCsv(filteredAssetsData, `os_${new Date().toISOString().slice(0,10)}.csv`)}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium"
                 >
                   <Download className="w-4 h-4"/> Скачать CSV
@@ -378,7 +407,7 @@ export default function ReportsPage() {
               <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
                 <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Реестр ОС</h3>
-                  <span className="text-xs text-gray-500">Всего: {assetsData.length}</span>
+                  <span className="text-xs text-gray-500">Всего: {filteredAssetsData.length}</span>
                 </div>
                 <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
                   <table className="w-full text-sm">
@@ -393,7 +422,7 @@ export default function ReportsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                      {assetsData.slice(0, 100).map((row, i) => (
+                      {filteredAssetsData.slice(0, 100).map((row, i) => (
                         <tr key={(row.id as string) || i} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
                           <td className="px-4 py-2.5 font-mono">{row.inv_number as string}</td>
                           <td className="px-4 py-2.5">{(row.name as string) || "—"}</td>
@@ -406,9 +435,9 @@ export default function ReportsPage() {
                     </tbody>
                   </table>
                 </div>
-                {assetsData.length > 100 && (
+                {filteredAssetsData.length > 100 && (
                   <p className="px-4 py-2 text-xs text-gray-500 border-t border-gray-100 dark:border-gray-800">
-                    Показаны первые 100 из {assetsData.length}. Скачайте CSV для полного списка.
+                    Показаны первые 100 из {filteredAssetsData.length}. Скачайте CSV для полного списка.
                   </p>
                 )}
               </div>

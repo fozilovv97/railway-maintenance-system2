@@ -4,9 +4,12 @@
   "private": true,
   "scripts": {
     "build": "next build",
-    "dev": "node --max-old-space-size=4096 node_modules/next/dist/bin/next dev",
+    "dev": "next dev -p 3000",
     "lint": "eslint .",
-    "start": "next start"
+    "start": "next start -p 3001",
+    "wialon": "node server/wialon-receiver.js",
+    "wialon:dev": "node --watch server/wialon-receiver.js",
+    "test:wialon": "node scripts/test-wialon-server.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -44,7 +47,9 @@
     "clsx": "^2.1.1",
     "cmdk": "1.0.4",
     "date-fns": "4.1.0",
+    "dotenv": "^17.3.1",
     "embla-carousel-react": "8.5.1",
+    "express": "^5.2.1",
     "input-otp": "1.4.1",
     "lucide-react": "^0.454.0",
     "next": "15.2.6",

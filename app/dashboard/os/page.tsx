@@ -1,12 +1,12 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { supabase } from "@/lib/supabase"
 import { useSections } from "@/lib/use-sections"
 import {
   Train, Container, Plus, Search, X, Save, ChevronDown,
   CheckCircle, Wrench, AlertTriangle, XCircle,
-  CalendarDays, SlidersHorizontal, Pencil, Building2, Hash
+  CalendarDays, SlidersHorizontal, Pencil, Building2, Hash, Radio
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input"
 /* ════════════════════════════════════════
    ТИПЫ
 ════════════════════════════════════════ */
-type AssetType = "locomotive" | "wagon"
+type AssetType = "locomotive" | "wagon" | "diesel"
 type AssetStatus = "operational" | "maintenance" | "repair" | "out_of_service"
 
 type FixedAsset = {
@@ -32,6 +32,9 @@ type FixedAsset = {
   invNumber:    string   // инвентарный номер ОС
   initialCost:  string   // первоначальная стоимость (сум)
   owner:        string
+  /** Пробег синхронизирован из Wialon */
+  wialonLastSync?: string | null
+  wialonOnline?: boolean
 }
 
 /* ════════════════════════════════════════
@@ -68,7 +71,12 @@ function AssetModal({ asset, onClose, onSave, sections }: {
   const [owner,        setOwner]        = useState(asset.owner)
 
   const st = statusConfig[status]
-  const isLoco = asset.assetType === "locomotive"
+  const typeLabels: Record<string, { label: string; gradient: string; Icon: React.ElementType }> = {
+    locomotive: { label: "Локомотив", gradient: "bg-gradient-to-r from-blue-600 to-blue-700", Icon: Train },
+    diesel:     { label: "Тепловоз",  gradient: "bg-gradient-to-r from-orange-600 to-orange-700", Icon: Train },
+    wagon:      { label: "Вагон",     gradient: "bg-gradient-to-r from-purple-600 to-purple-700", Icon: Container },
+  }
+  const typeInfo = typeLabels[asset.assetType] || typeLabels.locomotive
 
   const handleSave = () => {
     onSave({ ...asset, commDate, status, depot, mileage, lastMaint, nextMaint, initialCost, owner })
@@ -87,18 +95,17 @@ function AssetModal({ asset, onClose, onSave, sections }: {
       <div className="w-full max-w-2xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 flex flex-col max-h-[90vh]">
 
         {/* Шапка */}
-        <div className={`flex items-center justify-between px-6 py-4 rounded-t-2xl ${
-          isLoco ? "bg-gradient-to-r from-blue-600 to-blue-700" : "bg-gradient-to-r from-purple-600 to-purple-700"
-        } text-white flex-shrink-0`}>
+        <div className={`flex items-center justify-between px-6 py-4 rounded-t-2xl ${typeInfo.gradient} text-white flex-shrink-0`}>
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
-              {isLoco ? <Train className="w-5 h-5"/> : <Container className="w-5 h-5"/>}
+              <typeInfo.Icon className="w-5 h-5"/>
             </div>
             <div>
               <p className="text-xs opacity-80 font-medium">
-                {isLoco ? "Локомотив" : "Вагон"} · {asset.invNumber}
+                {typeInfo.label} {asset.series && `· ${asset.series}`}
               </p>
               <p className="text-lg font-bold leading-tight">{asset.name}</p>
+              {asset.invNumber && <p className="text-xs opacity-70">Инв. № {asset.invNumber}</p>}
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors">
@@ -190,11 +197,11 @@ function AssetModal({ asset, onClose, onSave, sections }: {
             </div>
 
             <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Первоначальная стоимость (сум)</p>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Номер вагона</p>
               {editing ? (
-                <input value={initialCost} onChange={e => setInitialCost(e.target.value)} className={fieldCls(true)} placeholder="0"/>
+                <input value={initialCost} onChange={e => setInitialCost(e.target.value)} className={fieldCls(true)} placeholder="33-9909"/>
               ) : (
-                <p className={fieldCls(false)}>{initialCost} сум</p>
+                <p className={fieldCls(false)}>{initialCost}</p>
               )}
             </div>
 
@@ -203,7 +210,14 @@ function AssetModal({ asset, onClose, onSave, sections }: {
               {editing ? (
                 <input value={mileage} onChange={e => setMileage(e.target.value)} className={fieldCls(true)}/>
               ) : (
-                <p className={fieldCls(false)}>{mileage}</p>
+                <>
+                  <p className={fieldCls(false)}>{mileage || "—"}</p>
+                  {(asset.assetType === "locomotive" || asset.assetType === "diesel") && asset.wialonLastSync && (
+                    <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1">
+                      <Radio className="w-3 h-3"/> Актуальные данные с Wialon · обновлено {new Date(asset.wialonLastSync).toLocaleString("ru-RU")}
+                    </p>
+                  )}
+                </>
               )}
             </div>
 
@@ -254,25 +268,25 @@ function AssetModal({ asset, onClose, onSave, sections }: {
 ════════════════════════════════════════ */
 function AddAssetModal({ onClose, onSave, sections }: { onClose: () => void; onSave: (a: FixedAsset) => void; sections: string[] }) {
   const [assetType,   setAssetType]   = useState<AssetType>("locomotive")
-  const [id,          setId]          = useState("")
-  const [name,        setName]        = useState("")
+  const [name,        setName]        = useState("")  // Номер/Наименование (основное поле)
   const [series,      setSeries]      = useState("")
   const [depot,       setDepot]       = useState(sections[0] ?? "")
   const [commDate,    setCommDate]    = useState("")
   const [yearBuilt,   setYearBuilt]   = useState("")
   const [initialCost, setInitialCost] = useState("")
+  const [invNumber,   setInvNumber]   = useState("")  // Инвентарный номер
   const [owner,       setOwner]       = useState("РЖД")
   const [error,       setError]       = useState("")
 
-  const invNum = "ОС-" + String(Date.now()).slice(-4)
-
   const handleSave = () => {
-    if (!id.trim() || !name.trim() || !commDate.trim()) {
-      setError("Заполните обязательные поля: Номер, Наименование, Дата ввода")
+    if (!name.trim() || !commDate.trim()) {
+      setError("Заполните обязательные поля: Наименование, Дата ввода")
       return
     }
+    // Генерируем уникальный ID
+    const generatedId = `${assetType === "locomotive" ? "LOC" : assetType === "diesel" ? "DSL" : "WAG"}-${Date.now()}`
     onSave({
-      id: id.trim(),
+      id: generatedId,
       name: name.trim(),
       assetType,
       series,
@@ -283,7 +297,7 @@ function AddAssetModal({ onClose, onSave, sections }: { onClose: () => void; onS
       mileage: "0",
       lastMaint: "—",
       nextMaint: "—",
-      invNumber: invNum,
+      invNumber: invNumber.trim(),
       initialCost,
       owner,
     })
@@ -323,6 +337,12 @@ function AddAssetModal({ onClose, onSave, sections }: { onClose: () => void; onS
                 }`}>
                 <Train className="w-4 h-4"/> Локомотив
               </button>
+              <button onClick={() => setAssetType("diesel")}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold border-2 transition-all ${
+                  assetType === "diesel" ? "border-orange-500 bg-orange-50 text-orange-700 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-600" : "border-gray-200 dark:border-gray-700 text-gray-500"
+                }`}>
+                <Train className="w-4 h-4"/> Тепловоз
+              </button>
               <button onClick={() => setAssetType("wagon")}
                 className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold border-2 transition-all ${
                   assetType === "wagon" ? "border-purple-500 bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-300 dark:border-purple-600" : "border-gray-200 dark:border-gray-700 text-gray-500"
@@ -332,20 +352,20 @@ function AddAssetModal({ onClose, onSave, sections }: { onClose: () => void; onS
             </div>
           </div>
 
+          <div>
+            <label className={lbl}>Наименование (номер) <span className="text-red-500">*</span></label>
+            <input value={name} onChange={e => setName(e.target.value)} className={inp} placeholder="Вагон-самосвал 12345 / ЧС7-042"/>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={lbl}>Номер <span className="text-red-500">*</span></label>
-              <input value={id} onChange={e => setId(e.target.value)} className={inp} placeholder="ЧС7-042 / В-78341"/>
-            </div>
             <div>
               <label className={lbl}>Серия / Модель</label>
               <input value={series} onChange={e => setSeries(e.target.value)} className={inp} placeholder="ЧС7, 61-4440..."/>
             </div>
-          </div>
-
-          <div>
-            <label className={lbl}>Наименование <span className="text-red-500">*</span></label>
-            <input value={name} onChange={e => setName(e.target.value)} className={inp} placeholder="Электровоз ЧС7-042"/>
+            <div>
+              <label className={lbl}>Инвентарный номер</label>
+              <input value={invNumber} onChange={e => setInvNumber(e.target.value)} className={inp} placeholder="ОС-12345"/>
+            </div>
           </div>
 
           {/* Дата ввода — ключевое поле */}
@@ -362,8 +382,8 @@ function AddAssetModal({ onClose, onSave, sections }: { onClose: () => void; onS
               <input value={yearBuilt} onChange={e => setYearBuilt(e.target.value)} className={inp} placeholder="2015"/>
             </div>
             <div>
-              <label className={lbl}>Перв. стоимость (сум)</label>
-              <input value={initialCost} onChange={e => setInitialCost(e.target.value)} className={inp} placeholder="42 000 000"/>
+              <label className={lbl}>Номер вагона</label>
+              <input value={initialCost} onChange={e => setInitialCost(e.target.value)} className={inp} placeholder="33-9909"/>
             </div>
           </div>
 
@@ -402,20 +422,22 @@ function AddAssetModal({ onClose, onSave, sections }: { onClose: () => void; onS
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function fromRow(r: any): FixedAsset {
   return {
-    id:          r.id,
-    name:        r.name,
-    assetType:   r.asset_type,
-    series:      r.series,
-    depot:       r.depot,
-    status:      r.status,
-    commDate:    r.comm_date,
-    yearBuilt:   r.year_built,
-    mileage:     r.mileage,
-    lastMaint:   r.last_maint,
-    nextMaint:   r.next_maint,
-    invNumber:   r.inv_number,
-    initialCost: r.initial_cost,
-    owner:       r.owner,
+    id:               r.id,
+    name:             r.name,
+    assetType:        r.asset_type,
+    series:           r.series,
+    depot:            r.depot,
+    status:           r.status,
+    commDate:         r.comm_date,
+    yearBuilt:        r.year_built,
+    mileage:          r.mileage ?? "",
+    lastMaint:        r.last_maint,
+    nextMaint:        r.next_maint,
+    invNumber:        r.inv_number,
+    initialCost:      r.initial_cost,
+    owner:            r.owner,
+    wialonLastSync:   r.wialon_last_sync ?? null,
+    wialonOnline:     !!r.wialon_online,
   }
 }
 
@@ -454,51 +476,101 @@ export default function OsPage() {
   const [fDepot,    setFDepot]    = useState("")
   const [fStatus,   setFStatus]   = useState<AssetStatus | "">("")
   const [allDepots, setAllDepots] = useState<string[]>([])
+  
+  // Ref для фильтров в real-time подписке (чтобы не пересоздавать канал)
+  const filtersRef = useRef({ page: 0, search: "", fType: "" as AssetType | "", fDepot: "", fStatus: "" as AssetStatus | "" })
 
-  // Загружаем счётчики и список депо один раз
+  // Загружаем счётчики и список депо один раз (оптимизированные запросы)
   const fetchCounts = useCallback(async () => {
-    const { data } = await supabase
-      .from("fixed_assets")
-      .select("asset_type,status,depot")
-    if (!data) return
-    const all   = data.length
-    const loco  = data.filter((r: {asset_type: string}) => r.asset_type === "locomotive").length
-    const wagon = data.filter((r: {asset_type: string}) => r.asset_type === "wagon").length
-    const oper  = data.filter((r: {status: string}) => r.status === "operational").length
-    const rep   = data.filter((r: {status: string}) => r.status === "repair" || r.status === "maintenance").length
-    const ret   = data.filter((r: {status: string}) => r.status === "out_of_service").length
-    setCounts({ total: all, loco, wagon, operational: oper, repair: rep, retired: ret })
-    const deps = [...new Set(data.map((r: {depot: string}) => r.depot ?? ""))].filter(Boolean).sort()
-    setAllDepots(deps as string[])
+    // Параллельные запросы для подсчёта
+    const [
+      { count: totalCount },
+      { count: locoCount },
+      { count: wagonCount },
+      { count: operCount },
+      { count: maintCount },
+      { count: repairCount },
+      { count: retiredCount },
+      { data: depotsData }
+    ] = await Promise.all([
+      supabase.from("fixed_assets").select("*", { count: "exact", head: true }),
+      supabase.from("fixed_assets").select("*", { count: "exact", head: true }).eq("asset_type", "locomotive"),
+      supabase.from("fixed_assets").select("*", { count: "exact", head: true }).eq("asset_type", "wagon"),
+      supabase.from("fixed_assets").select("*", { count: "exact", head: true }).eq("status", "operational"),
+      supabase.from("fixed_assets").select("*", { count: "exact", head: true }).eq("status", "maintenance"),
+      supabase.from("fixed_assets").select("*", { count: "exact", head: true }).eq("status", "repair"),
+      supabase.from("fixed_assets").select("*", { count: "exact", head: true }).eq("status", "out_of_service"),
+      supabase.from("fixed_assets").select("depot").not("depot", "is", null).not("depot", "eq", "").limit(1000)
+    ])
+
+    setCounts({
+      total: totalCount ?? 0,
+      loco: locoCount ?? 0,
+      wagon: wagonCount ?? 0,
+      operational: operCount ?? 0,
+      repair: (maintCount ?? 0) + (repairCount ?? 0),
+      retired: retiredCount ?? 0
+    })
+
+    // Уникальные депо
+    if (depotsData) {
+      const deps = [...new Set(depotsData.map((r: { depot: string }) => r.depot))].filter(Boolean).sort()
+      setAllDepots(deps as string[])
+    }
   }, [])
 
   const fetchAssets = useCallback(async (pg: number, q: string, ft: string, fd: string, fs: string) => {
     setLoading(true)
-    let query = supabase
-      .from("fixed_assets")
-      .select("*", { count: "exact" })
-      .order("created_at", { ascending: false })
-      .range(pg * PAGE_SIZE, pg * PAGE_SIZE + PAGE_SIZE - 1)
+    try {
+      let query = supabase
+        .from("fixed_assets")
+        .select("*", { count: "exact" })
+        .order("created_at", { ascending: false })
+        .range(pg * PAGE_SIZE, pg * PAGE_SIZE + PAGE_SIZE - 1)
 
-    if (ft) query = query.eq("asset_type", ft)
-    if (fd) query = query.eq("depot", fd)
-    if (fs) query = query.eq("status", fs)
-    if (q)  query = query.or(
-      `name.ilike.%${q}%,series.ilike.%${q}%,inv_number.ilike.%${q}%,id.ilike.%${q}%,depot.ilike.%${q}%,owner.ilike.%${q}%`
-    )
+      if (ft) query = query.eq("asset_type", ft)
+      if (fd) query = query.eq("depot", fd)
+      if (fs) query = query.eq("status", fs)
+      if (q)  query = query.or(
+        `name.ilike.%${q}%,series.ilike.%${q}%,inv_number.ilike.%${q}%,id.ilike.%${q}%,depot.ilike.%${q}%,owner.ilike.%${q}%`
+      )
 
-    const { data, count, error } = await query
-    if (!error && data) {
-      setAssets(data.map(fromRow))
-      setTotal(count ?? 0)
-    } else {
+      const { data, count, error } = await query
+      if (!error && data) {
+        setAssets(data.map(fromRow))
+        setTotal(count ?? 0)
+      } else {
+        setAssets([])
+        setTotal(0)
+      }
+    } catch (e) {
+      console.error("Ошибка загрузки ОС:", e)
       setAssets([])
       setTotal(0)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }, [])
 
   useEffect(() => { fetchCounts() }, [fetchCounts])
+
+  // Обновляем ref при изменении фильтров
+  useEffect(() => {
+    filtersRef.current = { page, search, fType, fDepot, fStatus }
+  }, [page, search, fType, fDepot, fStatus])
+
+  // Real-time подписка на изменения в fixed_assets (используем ref для фильтров)
+  useEffect(() => {
+    const channel = supabase
+      .channel("os_sync")
+      .on("postgres_changes", { event: "*", schema: "public", table: "fixed_assets" }, () => {
+        const f = filtersRef.current
+        fetchAssets(f.page, f.search, f.fType, f.fDepot, f.fStatus)
+        fetchCounts()
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [fetchAssets, fetchCounts])
 
   // Сброс страницы при смене фильтров
   useEffect(() => {
@@ -595,6 +667,7 @@ export default function OsPage() {
             <select value={fType} onChange={e => setFType(e.target.value as AssetType | "")} className={selCls}>
               <option value="">Все типы</option>
               <option value="locomotive">Локомотивы</option>
+              <option value="diesel">Тепловозы</option>
               <option value="wagon">Вагоны</option>
             </select>
             <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none"/>
@@ -641,42 +714,42 @@ export default function OsPage() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
-              {["Инв. №","Тип","Номер / Наименование","Серия","Дата ввода в экспл.","Депо / Участок","Год","Пробег (км)","Статус"].map(h => (
+              {["Тип","Наименование / Номер","Дата ввода в экспл.","Депо / Участок","Год","Пробег (км)","Статус"].map(h => (
                 <th key={h} className="text-left px-4 py-3.5 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
             {filtered.length === 0 && (
-              <tr><td colSpan={9} className="px-5 py-12 text-center text-sm text-gray-400">
+              <tr><td colSpan={7} className="px-5 py-12 text-center text-sm text-gray-400">
                 <Search className="w-8 h-8 mx-auto mb-2 opacity-30"/>
                 Ничего не найдено
               </td></tr>
             )}
             {filtered.map(a => {
               const st = statusConfig[a.status]
-              const isLoco = a.assetType === "locomotive"
+              const typeConfig = {
+                locomotive: { label: "Локомотив", cls: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300", Icon: Train },
+                diesel:     { label: "Тепловоз",  cls: "bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300", Icon: Train },
+                wagon:      { label: "Вагон",     cls: "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300", Icon: Container },
+              }
+              const tc = typeConfig[a.assetType] || typeConfig.locomotive
               return (
                 <tr key={a.id} onClick={() => setSelected(a)}
                   className="hover:bg-blue-50/40 dark:hover:bg-blue-950/20 cursor-pointer transition-colors">
                   <td className="px-4 py-3.5">
-                    <span className="text-xs font-mono text-gray-500">{a.invNumber}</span>
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md ${
-                      isLoco
-                        ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
-                        : "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
-                    }`}>
-                      {isLoco ? <Train className="w-3 h-3"/> : <Container className="w-3 h-3"/>}
-                      {isLoco ? "Локомотив" : "Вагон"}
+                    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md ${tc.cls}`}>
+                      <tc.Icon className="w-3 h-3"/>
+                      {tc.label}
                     </span>
                   </td>
                   <td className="px-4 py-3.5">
-                    <p className="text-sm font-semibold text-gray-900 dark:text-white">{a.id}</p>
-                    <p className="text-xs text-gray-400 truncate max-w-[180px]">{a.name}</p>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                      {a.name}
+                      {a.initialCost && <span className="ml-2 text-blue-600 dark:text-blue-400 font-bold">{a.initialCost}</span>}
+                    </p>
+                    {a.invNumber && <p className="text-xs text-gray-400 truncate max-w-[220px]">Инв. № {a.invNumber}</p>}
                   </td>
-                  <td className="px-4 py-3.5 text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">{a.series}</td>
                   <td className="px-4 py-3.5">
                     <div className="flex items-center gap-1.5">
                       <CalendarDays className="w-3.5 h-3.5 text-blue-500 flex-shrink-0"/>
@@ -690,7 +763,16 @@ export default function OsPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3.5 text-sm text-gray-600 dark:text-gray-300">{a.yearBuilt}</td>
-                  <td className="px-4 py-3.5 text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">{a.mileage}</td>
+                  <td className="px-4 py-3.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">{a.mileage || "—"}</span>
+                      {(a.assetType === "locomotive" || a.assetType === "diesel") && (a.wialonOnline || a.wialonLastSync) && (
+                        <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400" title={a.wialonLastSync ? `Обновлено: ${new Date(a.wialonLastSync).toLocaleString("ru-RU")}` : "Данные из Wialon"}>
+                          <Radio className="w-2.5 h-2.5"/> Wialon
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3.5">
                     <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full whitespace-nowrap ${st.cls}`}>
                       <st.icon className="w-3 h-3"/>{st.label}

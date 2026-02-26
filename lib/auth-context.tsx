@@ -45,16 +45,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session }, error }) => {
+      if (error) {
+        console.warn("Session error:", error.message)
+        // Очищаем невалидную сессию
+        await supabase.auth.signOut()
+        setUser(null)
+        setProfile(null)
+        setLoading(false)
+        return
+      }
       setUser(session?.user ?? null)
       if (session?.user) {
         await loadProfile(session.user.id)
       }
       setLoading(false)
+    }).catch(async (err) => {
+      console.warn("Auth error:", err)
+      setUser(null)
+      setProfile(null)
+      setLoading(false)
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      async (event, session) => {
+        // Обработка ошибки токена
+        if (event === "TOKEN_REFRESHED" && !session) {
+          console.warn("Token refresh failed, signing out")
+          await supabase.auth.signOut()
+          setUser(null)
+          setProfile(null)
+          setLoading(false)
+          return
+        }
+        
+        if (event === "SIGNED_OUT") {
+          setUser(null)
+          setProfile(null)
+          setLoading(false)
+          return
+        }
+
         setUser(session?.user ?? null)
         if (session?.user) {
           await loadProfile(session.user.id)

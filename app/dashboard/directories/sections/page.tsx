@@ -1,15 +1,14 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { Building2, Plus, X, Trash2 } from "lucide-react"
+import { Building2, Plus, Trash2, ArrowLeft } from "lucide-react"
+import Link from "next/link"
 import { supabase } from "@/lib/supabase"
-import { useAuth } from "@/lib/auth-context"
 import { Button } from "@/components/ui/button"
 
 type SectionRow = { id: string; name: string; created_at: string }
 
-export default function AdminSectionsPage() {
-  const { profile } = useAuth()
+export default function SectionsPage() {
   const [list, setList] = useState<SectionRow[]>([])
   const [loading, setLoading] = useState(true)
   const [newName, setNewName] = useState("")
@@ -55,19 +54,20 @@ export default function AdminSectionsPage() {
     if (!e) fetchSections()
   }
 
-  if (profile?.role !== "admin") {
-    return (
-      <div className="flex items-center justify-center h-96 text-gray-400 text-sm">
-        Доступ разрешён только администраторам
-      </div>
-    )
-  }
-
   return (
     <div className="p-8 space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Участки</h1>
+      <div className="flex items-center gap-4">
+        <Link
+          href="/dashboard/directories"
+          className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5 text-gray-500" />
+        </Link>
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
+            <Building2 className="w-7 h-7 text-green-500" />
+            Участки
+          </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Справочник участков для нарядов и пользователей</p>
         </div>
       </div>
