@@ -50,9 +50,15 @@ function getLocalIP() {
   return 'localhost';
 }
 
+// Извлечь номер агрегата из строки (конец, начало или любая группа 2–4 цифр)
 function extractNumber(str) {
   if (!str) return null;
-  const m = String(str).match(/(\d{2,4})\s*$/);
+  const s = String(str).trim();
+  let m = s.match(/(\d{2,4})\s*$/);   // в конце: "ПЭ-2У 111" → 111
+  if (m) return m[1];
+  m = s.match(/^\s*(\d{2,4})\b/);     // в начале: "111" или "094"
+  if (m) return m[1];
+  m = s.match(/\b(\d{2,4})\b/);       // любая группа: "№ 111" или "агрегат 111"
   return m ? m[1] : null;
 }
 
@@ -73,7 +79,14 @@ async function refreshCache() {
       const nameKey = (a.name || '').toLowerCase().trim();
       if (nameKey) assetCache.set(nameKey, a);
       const num = extractNumber(a.name);
-      if (num) assetCache.set(`#${num}`, a);
+      if (num) {
+        assetCache.set(`#${num}`, a);
+        const numInt = parseInt(num, 10);
+        if (!isNaN(numInt)) {
+          assetCache.set(`#${numInt}`, a);           // #94 для "094"
+          if (num.length <= 3) assetCache.set(`#${String(numInt).padStart(3, '0')}`, a);
+        }
+      }
     }
     lastCache = Date.now();
     console.log('📦 Кэш ОС:', assetCache.size);
@@ -83,21 +96,32 @@ async function refreshCache() {
 }
 
 function findAsset(unitId, unitName) {
-  if (unitId && /^\d+$/.test(String(unitId))) {
-    const byId = assetCache.get(String(unitId));
+  const idStr = unitId != null ? String(unitId).trim() : '';
+  const nameStr = unitName != null ? String(unitName).trim() : '';
+  if (idStr && /^\d+$/.test(idStr)) {
+    const byId = assetCache.get(idStr);
     if (byId) return byId;
+    const byNumKey = assetCache.get(`#${idStr}`);
+    if (byNumKey) return byNumKey;
+    const byNumInt = assetCache.get(`#${parseInt(idStr, 10)}`);
+    if (byNumInt) return byNumInt;
   }
-  const num = extractNumber(unitId) || extractNumber(unitName);
+  const num = extractNumber(idStr) || extractNumber(nameStr);
   if (num) {
     const byNum = assetCache.get(`#${num}`);
     if (byNum) return byNum;
+    const byNumInt = assetCache.get(`#${parseInt(num, 10)}`);
+    if (byNumInt) return byNumInt;
   }
-  const search = (unitName || unitId || '').toString().toLowerCase().trim();
+  const search = (nameStr || idStr).toLowerCase();
   if (search && assetCache.has(search)) return assetCache.get(search);
   if (num) {
-    for (const [key, asset] of assetCache.entries()) {
-      if (typeof key === 'string' && key.startsWith('#')) {
-        if (parseInt(key.slice(1), 10) === parseInt(num, 10)) return asset;
+    const numVal = parseInt(num, 10);
+    if (!isNaN(numVal)) {
+      for (const [key, asset] of assetCache.entries()) {
+        if (typeof key === 'string' && key.startsWith('#')) {
+          if (parseInt(key.slice(1), 10) === numVal) return asset;
+        }
       }
     }
   }

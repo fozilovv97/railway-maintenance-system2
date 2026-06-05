@@ -308,7 +308,7 @@ function GanttChart({ items, rangeStart, rangeDays, onCreateOrder }: {
   rangeDays: number
   onCreateOrder?: (unit: string, section: string) => void
 }) {
-  const today = new Date(2026, 1, 19) // 19.02.2026
+  const today = new Date()
   const todayOffset = diffDays(rangeStart, today)
   const todayPct = (todayOffset / rangeDays) * 100
 
@@ -975,6 +975,55 @@ function planToSchedule(mp: any, currentMileage: number): ScheduleItem {
   }
 }
 
+// Следующий порог по интервалу (км): ближайшее следующее кратное interval_km
+function nextTriggerKm(currentMileage: number, intervalKm: number): number {
+  if (intervalKm <= 0) return currentMileage
+  return (Math.floor(currentMileage / intervalKm) + 1) * intervalKm
+}
+
+// Плановые ТО по справочнику интервалов (maintenance_intervals) + пробег из ОС
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function intervalsToSchedule(
+  assets: { id: string; name: string; mileage: string; depot: string; asset_type: string }[],
+  intervals: { code: string; name: string; interval_km: number; asset_types: string[] | null; is_active: boolean }[],
+  existingPlanKeys: Set<string>
+): ScheduleItem[] {
+  const today = new Date()
+  const todayStr = [
+    String(today.getDate()).padStart(2, "0"),
+    String(today.getMonth() + 1).padStart(2, "0"),
+    today.getFullYear(),
+  ].join(".")
+  const items: ScheduleItem[] = []
+  for (const a of assets) {
+    const mileage = parseInt(String(a.mileage || "0"), 10) || 0
+    const assetTypes = (a.asset_type && [a.asset_type]) || ["locomotive", "diesel"]
+    for (const iv of intervals) {
+      if (!iv.is_active || !iv.interval_km) continue
+      const types = iv.asset_types || ["locomotive", "diesel"]
+      if (!assetTypes.some((t: string) => types.includes(t))) continue
+      const nextTr = nextTriggerKm(mileage, iv.interval_km)
+      const key = `${a.id}-${iv.code}-${nextTr}`
+      if (existingPlanKeys.has(key)) continue
+      const remainingKm = nextTr - mileage
+      items.push({
+        id:            `interval-${key}`,
+        unit:          a.name || "",
+        type:          iv.code || iv.name,
+        startDate:     todayStr,
+        durationH:     8,
+        depot:         a.depot || "",
+        tech:          "",
+        status:        "upcoming",
+        mileage,
+        remainingKm:   remainingKm < 0 ? 0 : remainingKm,
+        nextThreshold: nextTr,
+      })
+    }
+  }
+  return items
+}
+
 export default function MaintenancePage() {
   const [schedule,  setSchedule]  = useState<ScheduleItem[]>([])
   const [loading,   setLoading]   = useState(true)
@@ -1042,51 +1091,21 @@ export default function MaintenancePage() {
   }, [])
 
 
-  // Загрузка: наряды (work_orders) + планы по пробегу (maintenance_plan) с актуальным пробегом из ОС (fixed_assets)
-  const fetchSchedule = useCallback(async () => {
+  // Загрузка графика с сервера (даты считаются на сервере)
+  const fetchSchedule = useCallback(async (monthOffsetParam?: number) => {
     setLoading(true)
     try {
-      const [
-        { data: woData },
-        { data: planData },
-        { data: assetsData },
-      ] = await Promise.all([
-        supabase
-          .from("work_orders")
-          .select("id,unit,repair_kind,work_type,date_start,section,depot,tech,status,note")
-          .order("date_start", { ascending: true })
-          .limit(500),
-        supabase
-          .from("maintenance_plan")
-          .select("id,asset_id,asset_name,maintenance_type,trigger_mileage,scheduled_date,status")
-          .in("status", ["Scheduled", "InProgress"]),
-        supabase
-          .from("fixed_assets")
-          .select("id,name,mileage,depot")
-          .in("asset_type", ["locomotive", "diesel"]),
-      ])
+      const offset = monthOffsetParam ?? monthOffset
+      const now = new Date()
+      const totalMonth = now.getMonth() + offset
+      const y = now.getFullYear() + Math.floor(totalMonth / 12)
+      const m = ((totalMonth % 12) + 12) % 12 + 1
+      const queryMonth = `${y}-${String(m).padStart(2, "0")}`
 
-      const assets = assetsData || []
-      const assetMileage: Record<string, number> = {}
-      const assetDepot: Record<string, string> = {}
-      const mileageByUnit: Record<string, number> = {}
-      for (const a of assets) {
-        const m = parseInt(String(a.mileage || "0"), 10) || 0
-        assetMileage[a.id] = m
-        assetDepot[a.id] = a.depot || ""
-        mileageByUnit[a.name?.trim() || ""] = m
-      }
-
-      const woItems: ScheduleItem[] = (woData || []).map((r: Record<string, unknown>) => woToSchedule(r, mileageByUnit))
-
-      const planItems: ScheduleItem[] = (planData || []).map((mp: Record<string, unknown>) => {
-        const currentMileage = assetMileage[mp.asset_id as string] ?? 0
-        const item = planToSchedule(mp, currentMileage)
-        item.depot = assetDepot[mp.asset_id as string] ?? ""
-        return item
-      })
-
-      setSchedule([...woItems, ...planItems])
+      const res = await fetch(`/api/maintenance-schedule?month=${queryMonth}`)
+      if (!res.ok) throw new Error(await res.text())
+      const { schedule: data } = await res.json()
+      setSchedule(Array.isArray(data) ? data : [])
       setInitialLoadDone(true)
     } catch (e) {
       console.error("Ошибка загрузки ТО и ремонтов:", e)
@@ -1094,9 +1113,9 @@ export default function MaintenancePage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [monthOffset])
 
-  useEffect(() => { fetchSchedule() }, [fetchSchedule])
+  useEffect(() => { fetchSchedule(monthOffset) }, [fetchSchedule, monthOffset])
 
   useEffect(() => {
     const channel = supabase
@@ -1104,18 +1123,14 @@ export default function MaintenancePage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "work_orders" }, () => fetchSchedule())
       .on("postgres_changes", { event: "*", schema: "public", table: "maintenance_plan" }, () => fetchSchedule())
       .on("postgres_changes", { event: "*", schema: "public", table: "fixed_assets" }, () => fetchSchedule())
+      .on("postgres_changes", { event: "*", schema: "public", table: "maintenance_intervals" }, () => fetchSchedule())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [fetchSchedule])
 
-  const handleCreateOrder = (unit: string, _section: string) => {
-    const found = schedule.find(s => s.unit === unit)
-    if (found) setQuickItem(found)
-  }
-
   // Диапазон: текущий месяц
   const now         = new Date()
-  const today       = now
+  const today       = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const rangeStart  = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1)
   const rangeEnd    = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 0)
   const rangeDays   = diffDays(rangeStart, rangeEnd) + 1
@@ -1124,11 +1139,17 @@ export default function MaintenancePage() {
                        "Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"]
   const monthLabel  = monthNames[rangeStart.getMonth()] + " " + rangeStart.getFullYear()
 
+  // График приходит с сервера с уже рассчитанными датами
+  const allSchedule = schedule
+
+  const handleCreateOrder = (unit: string, _section: string) => {
+    const found = allSchedule.find((s) => s.unit === unit)
+    if (found) setQuickItem(found)
+  }
+
   // Участки из справочника (БД)
   const { sections: sectionsFromDb } = useSections()
   const qSections = sectionsFromDb.length > 0 ? sectionsFromDb : [...new Set(schedule.map(s => s.depot).filter(Boolean))].sort()
-
-  const allSchedule = schedule
 
   // Уникальные типы ТО для фильтра
   const uniqueTypes = [...new Set(allSchedule.map(s => s.type))].sort()

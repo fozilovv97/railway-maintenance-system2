@@ -200,7 +200,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           />
         </aside>
 
-        <main className="flex-1 overflow-auto">
+        <main className="flex-1 overflow-auto" key={pathname}>
           {children}
         </main>
       </div>

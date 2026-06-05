@@ -6,7 +6,7 @@ import { useSections } from "@/lib/use-sections"
 import {
   Train, Container, Plus, Search, X, Save, ChevronDown,
   CheckCircle, Wrench, AlertTriangle, XCircle,
-  CalendarDays, SlidersHorizontal, Pencil, Building2, Hash, Radio
+  CalendarDays, SlidersHorizontal, Pencil, Building2, Hash, Radio, Trash2
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -54,10 +54,11 @@ const statusConfig: Record<AssetStatus, { label: string; icon: React.ElementType
 /* ════════════════════════════════════════
    МОДАЛ ПРОСМОТРА / РЕДАКТИРОВАНИЯ
 ════════════════════════════════════════ */
-function AssetModal({ asset, onClose, onSave, sections }: {
+function AssetModal({ asset, onClose, onSave, onDelete, sections }: {
   asset: FixedAsset
   onClose: () => void
   onSave: (a: FixedAsset) => void
+  onDelete?: (a: FixedAsset) => void
   sections: string[]
 }) {
   const [editing,      setEditing]      = useState(false)
@@ -245,7 +246,21 @@ function AssetModal({ asset, onClose, onSave, sections }: {
         {/* Подвал */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 flex-shrink-0 rounded-b-2xl">
           <span className="text-xs text-gray-400">Инв. №: <span className="font-mono font-semibold text-gray-600 dark:text-gray-300">{asset.invNumber}</span></span>
-          <div className="flex gap-3">
+          <div className="flex gap-3 items-center">
+            {onDelete && (
+              <Button
+                type="button"
+                variant="outline"
+                className="gap-2 text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300 dark:text-red-400 dark:border-red-800 dark:hover:bg-red-950/50"
+                onClick={() => {
+                  if (confirm(`Удалить оборудование «${asset.name}» из реестра? Это действие нельзя отменить.`)) {
+                    onDelete(asset)
+                  }
+                }}
+              >
+                <Trash2 className="w-4 h-4"/> Удалить
+              </Button>
+            )}
             <Button variant="outline" onClick={onClose}>Закрыть</Button>
             {!editing ? (
               <Button className="gap-2 bg-blue-600 hover:bg-blue-700" onClick={() => setEditing(true)}>
@@ -595,6 +610,17 @@ export default function OsPage() {
     setSelected(null)
   }
 
+  const handleDelete = async (a: FixedAsset) => {
+    const { error } = await supabase.from("fixed_assets").delete().eq("id", a.id)
+    if (!error) {
+      fetchAssets(page, search, fType, fDepot, fStatus)
+      fetchCounts()
+      setSelected(null)
+    } else {
+      alert("Не удалось удалить: " + (error.message || "ошибка БД"))
+    }
+  }
+
   const handleAdd = async (a: FixedAsset) => {
     const { error } = await supabase.from("fixed_assets").insert(toRow(a))
     if (!error) {
@@ -616,7 +642,7 @@ export default function OsPage() {
 
   return (
     <div className="p-8 space-y-6">
-      {selected  && <AssetModal asset={selected}  onClose={() => setSelected(null)} onSave={handleSave} sections={sections}/>}
+      {selected  && <AssetModal asset={selected}  onClose={() => setSelected(null)} onSave={handleSave} onDelete={handleDelete} sections={sections}/>}
       {showAdd   && <AddAssetModal onClose={() => setShowAdd(false)} onSave={handleAdd} sections={sections}/>}
 
       {/* Заголовок */}

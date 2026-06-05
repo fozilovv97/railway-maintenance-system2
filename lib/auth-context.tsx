@@ -45,10 +45,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
+    let cancelled = false
+    const timeoutId = setTimeout(() => {
+      if (cancelled) return
+      setLoading((prev) => {
+        if (prev) return false
+        return prev
+      })
+    }, 5000)
+
     supabase.auth.getSession().then(async ({ data: { session }, error }) => {
+      if (cancelled) return
       if (error) {
         console.warn("Session error:", error.message)
-        // Очищаем невалидную сессию
         await supabase.auth.signOut()
         setUser(null)
         setProfile(null)
@@ -61,6 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setLoading(false)
     }).catch(async (err) => {
+      if (cancelled) return
       console.warn("Auth error:", err)
       setUser(null)
       setProfile(null)
@@ -96,7 +106,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     )
 
-    return () => subscription.unsubscribe()
+    return () => {
+      cancelled = true
+      clearTimeout(timeoutId)
+      subscription.unsubscribe()
+    }
   }, [])
 
   const signIn = async (email: string, password: string) => {
